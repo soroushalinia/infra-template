@@ -1,0 +1,346 @@
+services:
+  keycloak-db:
+    image: postgres:18.0-trixie
+    container_name: keycloak-db
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KEYCLOAK_DB_USER} -d ${KEYCLOAK_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.5
+    container_name: keycloak
+    command:
+    - start
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: ${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME_ADMIN: ${KC_HOSTNAME_ADMIN}
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ENABLED: true
+      KC_HTTP_PORT: 8080
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    extra_hosts:
+      - "${LDAP_DOMAIN}:172.20.0.2"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+    networks:
+      - default
+      - ldapnet
+
+  forgejo-db:
+    image: postgres:18.0-trixie
+    container_name: forgejo-db
+    environment:
+      POSTGRES_DB: ${FORGEJO_DB_NAME}
+      POSTGRES_USER: ${FORGEJO_DB_USER}
+      POSTGRES_PASSWORD: ${FORGEJO_DB_PASSWORD}
+    volumes:
+      - forgejo_db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FORGEJO_DB_USER} -d ${FORGEJO_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:13
+    container_name: forgejo
+    environment:
+      FORGEJO____APP_NAME: ${FORGEJO_APP_NAME}
+      FORGEJO__server__DOMAIN: ${FORGEJO_DOMAIN}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL}
+      FORGEJO__database__DB_TYPE: postgres
+      FORGEJO__database__HOST: forgejo-db:5432
+      FORGEJO__database__NAME: ${FORGEJO_DB_NAME}
+      FORGEJO__database__USER: ${FORGEJO_DB_USER}
+      FORGEJO__database__PASSWD: ${FORGEJO_DB_PASSWORD}
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__mailer__ENABLED: "true"
+      FORGEJO__mailer__FROM: ${FORGEJO_FROM}
+      FORGEJO__mailer__PROTOCOL: "smtps"
+      FORGEJO__mailer__SMTP_ADDR: ${FORGEJO_SMTP_ADDR}
+      FORGEJO__mailer__SMTP_PORT: "465"
+      FORGEJO__mailer__USER: ${FORGEJO_MAIL_USER}
+      FORGEJO__mailer__PASSWD: "${FORGEJO_MAIL_PASSWORD}"
+      FORGEJO__server__SSH_DOMAIN: ${FORGEJO_SSH_DOMAIN}
+      FORGEJO__server__SSH_PORT: 2222
+      FORGEJO__server__SSH_LISTEN_PORT: 22
+      FORGEJO__server__START_SSH_SERVER: false
+    ports:
+      - "2222:22"
+    volumes:
+      - forgejo_data:/data
+    depends_on:
+      forgejo-db:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    networks:
+      - default
+      - mailnet
+
+  forgejo-runner:
+    build:
+      context: ./forgejo-runner
+    image: local/forgejo-runner:12.1.2
+    container_name: forgejo-runner
+    depends_on:
+      - forgejo
+      - dind
+    environment:
+      FORGEJO_INSTANCE_URL: ${FORGEJO_ROOT_URL}
+      FORGEJO_RUNNER_NAME: ${FORGEJO_RUNNER_NAME:-docker-runner}
+      FORGEJO_RUNNER_LABELS: ${FORGEJO_RUNNER_LABELS:-docker}
+      FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
+      CONFIG_FILE: /data/config.yaml
+      DOCKER_HOST: tcp://dind:2375
+    volumes:
+      - forgejo_runner_data:/data
+    entrypoint: >
+      sh -c 'if [ ! -f /data/config.yaml ]; then
+        forgejo-runner register \
+          --instance "${FORGEJO_INSTANCE_URL}" \
+          --token "${FORGEJO_RUNNER_TOKEN}" \
+          --name "${FORGEJO_RUNNER_NAME}" \
+          --labels "${FORGEJO_RUNNER_LABELS}" \
+          --no-interactive;
+      fi;
+      forgejo-runner daemon'
+    restart: unless-stopped
+  dind:
+    image: docker:29.1.2-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--host=tcp://0.0.0.0:2375"]
+    volumes:
+      - dind_storage:/var/lib/docker
+    restart: unless-stopped
+
+  nexus:
+    image: sonatype/nexus3:3.85.0
+    container_name: nexus
+    environment:
+      NEXUS_SECRETS_KEY_FILE: /nexus-data/etc/keys/nexus-secrets.json
+    volumes:
+      - nexus_data:/nexus-data
+      - ./nexus-secrets.json:/nexus-data/etc/keys/nexus-secrets.json:ro
+    extra_hosts:
+      - "${LDAP_DOMAIN}:172.20.0.2"
+    networks:
+      - default
+      - ldapnet
+
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: ldap
+    environment:
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION}
+      LDAP_DOMAIN: ${LDAP_DOMAIN}
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD}"
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: live/ldap.soroushalinia.ir/cert.pem
+      LDAP_TLS_KEY_FILENAME: live/ldap.soroushalinia.ir/privkey.pem
+      LDAP_TLS_CA_CRT_FILENAME: live/ldap.soroushalinia.ir/fullchain.pem
+      LDAP_TLS_ENFORCE: "true"
+      LDAP_TLS_CIPHER_SUITE: NORMAL:SECURE256:-VERS-SSL3.0
+      LDAP_TLS_VERIFY_CLIENT: never
+      LDAP_REPLICATION: "false"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+      LDAP_SSL_HELPER_PREFIX: ldap
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+      - /etc/letsencrypt:/container/service/slapd/assets/certs
+    ports:
+      - "636:636"
+    networks:
+      ldapnet:
+        ipv4_address: 172.20.0.2
+      default:
+
+  lam-ui:
+    image: ghcr.io/ldapaccountmanager/lam:9.3
+    container_name: lam-ui
+    environment:
+      - LAM_LANG=en_US
+      - LDAP_SERVER=${LDAP_SERVER}
+      - LDAP_DOMAIN=${LDAP_DOMAIN}
+      - LDAP_BASE_DN=${LDAP_BASE_DN}
+      - LDAP_ADMIN_DN=${LDAP_ADMIN_DN}
+      - LAM_SKIP_PRECONFIGURE=false
+      - LAM_ENABLE_SELFSERVICE=true
+      - LAM_ENABLE_PASSWORD_RESET=true
+    extra_hosts:
+      - "${LDAP_DOMAIN}:172.20.0.2"
+    networks:
+      - default
+      - ldapnet
+     
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+    volumes:
+      - minio_data:/data
+    extra_hosts:
+      - "${LDAP_DOMAIN}:172.20.0.2"
+    depends_on:
+      - keycloak
+    networks:
+      - default
+      - ldapnet
+
+  console:
+    image: opens3/console:latest
+    container_name: minio-console
+    restart: unless-stopped
+    environment:
+      CONSOLE_MINIO_SERVER: "http://minio:9000"
+      CONSOLE_PBKDF_PASSPHRASE: "${CONSOLE_PBKDF_PASSPHRASE}"
+      CONSOLE_PBKDF_SALT: "${CONSOLE_PBKDF_SALT}"
+    extra_hosts:
+      - "${LDAP_DOMAIN}:172.20.0.2"
+    networks:
+      - default
+      - ldapnet
+
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      sh -c "
+        sleep 5 &&
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb -p local/${MINIO_BUCKET} || true &&
+        mc anonymous set private local/${MINIO_BUCKET} || true
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    restart: "no"
+
+  mailserver:
+    image: analogic/poste.io:2.5.7
+    container_name: mailserver
+    hostname: ${MAIL_HOSTNAME}
+    restart: always
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+    volumes:
+      - poste_data:/data
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - HTTPS=ON
+      - DISABLE_CLAMAV=TRUE
+      - TRUST_PROXY=true
+      - TZ=Asia/Tehran
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+      - LETSENCRYPT_HOST=${MAIL_HOSTNAME}
+    networks:
+      - default
+      - mailnet
+
+  nginx:
+    image: nginx:1.29.2-trixie
+    container_name: nginx
+    depends_on:
+      - keycloak
+      - mailserver
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt
+    restart: always
+    networks:
+    - default
+    - ldapnet
+
+  backup:
+    build:
+      context: ./backup
+    image: local/backup:latest
+    container_name: backup
+    depends_on:
+      - minio
+      - keycloak-db
+      - forgejo-db
+      - forgejo
+      - nexus
+      - mailserver
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-backup}
+      BACKUP_DIR: /backup/data
+      CRON_SCHEDULE: ${BACKUP_CRON_SCHEDULE:-0 2 * * *}
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER}
+      PGPASSWORD_KEYCLOAK: ${KEYCLOAK_DB_PASSWORD}
+      FORGEJO_DB_NAME: ${FORGEJO_DB_NAME}
+      FORGEJO_DB_USER: ${FORGEJO_DB_USER}
+      PGPASSWORD_FORGEJO: ${FORGEJO_DB_PASSWORD}
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data:ro
+      - forgejo_db_data:/var/lib/postgresql/data:ro
+      - forgejo_data:/data:ro
+      - nexus_data:/nexus-data:ro
+      - poste_data:/data_mail:ro
+      - ldap_data:/ldap_data:ro
+      - ldap_config:/ldap_config:ro
+      - ./backup:/backup
+    entrypoint: ["/backup/entrypoint.sh"]
+    restart: unless-stopped
+  
+volumes:
+  keycloak_db_data:
+  keycloak_data:
+  forgejo_db_data:
+  forgejo_data:
+  forgejo_runner_data:
+  nexus_data:
+  minio_data:
+  poste_data:
+  dind_storage:
+  ldap_data:
+  ldap_config:
+
+networks:
+  mailnet:
+    driver: bridge
+  ldapnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
