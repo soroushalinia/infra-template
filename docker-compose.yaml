@@ -36,7 +36,7 @@ services:
       keycloak-db:
         condition: service_healthy
     extra_hosts:
-      - "${LDAP_DOMAIN}:172.20.0.2"
+      - "${LDAP_DOMAIN}:172.25.0.2"
     volumes:
       - keycloak_data:/opt/keycloak/data
     networks:
@@ -107,22 +107,14 @@ services:
     environment:
       FORGEJO_INSTANCE_URL: ${FORGEJO_ROOT_URL}
       FORGEJO_RUNNER_NAME: ${FORGEJO_RUNNER_NAME:-docker-runner}
-      FORGEJO_RUNNER_LABELS: ${FORGEJO_RUNNER_LABELS:-docker}
+      FORGEJO_RUNNER_LABELS: ${FORGEJO_RUNNER_LABELS:-docker:docker://ghcr.io/catthehacker/ubuntu:act-latest}
       FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
-      CONFIG_FILE: /data/config.yaml
+      CONTAINER_NETWORK: bridge
+      JOB_DOCKER_HOST: ${JOB_DOCKER_HOST:-tcp://172.17.0.1:2375}
       DOCKER_HOST: tcp://dind:2375
+      CONFIG_FILE: /data/config.yaml
     volumes:
       - forgejo_runner_data:/data
-    entrypoint: >
-      sh -c 'if [ ! -f /data/config.yaml ]; then
-        forgejo-runner register \
-          --instance "${FORGEJO_INSTANCE_URL}" \
-          --token "${FORGEJO_RUNNER_TOKEN}" \
-          --name "${FORGEJO_RUNNER_NAME}" \
-          --labels "${FORGEJO_RUNNER_LABELS}" \
-          --no-interactive;
-      fi;
-      forgejo-runner daemon'
     restart: unless-stopped
   dind:
     image: docker:29.1.2-dind
@@ -143,7 +135,7 @@ services:
       - nexus_data:/nexus-data
       - ./nexus-secrets.json:/nexus-data/etc/keys/nexus-secrets.json:ro
     extra_hosts:
-      - "${LDAP_DOMAIN}:172.20.0.2"
+      - "${LDAP_DOMAIN}:172.25.0.2"
     networks:
       - default
       - ldapnet
@@ -173,7 +165,7 @@ services:
       - "636:636"
     networks:
       ldapnet:
-        ipv4_address: 172.20.0.2
+        ipv4_address: 172.25.0.2
       default:
 
   lam-ui:
@@ -189,7 +181,7 @@ services:
       - LAM_ENABLE_SELFSERVICE=true
       - LAM_ENABLE_PASSWORD_RESET=true
     extra_hosts:
-      - "${LDAP_DOMAIN}:172.20.0.2"
+      - "${LDAP_DOMAIN}:172.25.0.2"
     networks:
       - default
       - ldapnet
@@ -206,7 +198,7 @@ services:
     volumes:
       - minio_data:/data
     extra_hosts:
-      - "${LDAP_DOMAIN}:172.20.0.2"
+      - "${LDAP_DOMAIN}:172.25.0.2"
     depends_on:
       - keycloak
     networks:
@@ -222,7 +214,7 @@ services:
       CONSOLE_PBKDF_PASSPHRASE: "${CONSOLE_PBKDF_PASSPHRASE}"
       CONSOLE_PBKDF_SALT: "${CONSOLE_PBKDF_SALT}"
     extra_hosts:
-      - "${LDAP_DOMAIN}:172.20.0.2"
+      - "${LDAP_DOMAIN}:172.25.0.2"
     networks:
       - default
       - ldapnet
@@ -343,4 +335,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 172.25.0.0/16
