@@ -279,6 +279,25 @@ services:
     - default
     - ldapnet
 
+  prometheus:
+    image: prom/prometheus:v3.8.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/prometheus/config/prometheus.yml
+      - ./prometheus/rules.yml:/prometheus/config/rules.yml
+    networks:
+      - default
+  
+  node_exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: node-exporter
+    ports:
+      - 9100:9100
+    networks:
+      - default
+
   backup:
     build:
       context: ./backup
