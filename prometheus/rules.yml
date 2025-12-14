@@ -1,0 +1,11 @@
+groups:
+- name: global_alerts
+  rules:
+    - alert: InstanceDown
+      expr: up == 0
+      for: 0m
+      labels:
+        serverity: critical
+      annotations:
+        summary: "Instance {{ $labels.instance }} down"
+        description: "{{ $labels.instance }}of job {{ $labels.job }} has been down."
